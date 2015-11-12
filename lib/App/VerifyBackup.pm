@@ -107,29 +107,35 @@ sub verify_backup {
 
     local $CWD = $dir;
 
+    my @err_no_digest;
+
     my $code_find = sub {
         my ($prefix, $pid) = @_;
         opendir my($dh), "." or do {
             $log->warnf("Can't chdir into %s, skipped", $prefix);
             return;
         };
+      FILE:
         while (defined(my $e = readdir($dh))) {
-            next if $e eq '.' || $e eq '..';
+            next FILE if $e eq '.' || $e eq '..';
             $log->tracef("Processing %s/%s", $prefix, $e);
-
-            # if symlink, stat the symlink itself
-            my @st = stat($e);
-            my @rst;
-            if (-l _) {
-                @rst = @st;
-                @st = lstat($e);
+            my @lstat = lstat($e);
+            if (!@lstat) {
+                my ($path, $err) = ("$prefix/$e", $!);
+                push @err_no_digest, [$path, $err];
+                $log->errorf("Can't lstat %s/%s: %s", $path, $err);
+                next FILE;
             }
-
-            my @rst;
             if (-l _) {
+                # XXX digest readlink-nya
+            } elsif (!(-f _)) {
+                # skip special files
+                next FILE;
+            } else {
+                # XXX digest content-nya
+                my @stat = stat($e);
 
-            my @st = lstat($e);
-
+            }
         }
     };
 
