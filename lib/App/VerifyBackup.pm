@@ -8,6 +8,8 @@ use strict;
 use warnings;
 use Log::Any::IfLOG '$log';
 
+use Digest::SHA qw(sha512_base64);
+
 use File::chdir;
 
 our %SPEC;
@@ -107,44 +109,77 @@ sub verify_backup {
 
     local $CWD = $dir;
 
-    my @err_no_digest;
+    my @errs_unreadable;
 
-    my $code_find = sub {
-        my ($prefix, $pid) = @_;
+    my $code_find;
+    $code_find = sub {
+        my %cfargs = @_;
+        my $prefix = $cfargs{prefix};
+
         opendir my($dh), "." or do {
             $log->warnf("Can't chdir into %s, skipped", $prefix);
             return;
         };
+
       FILE:
-        while (defined(my $e = readdir($dh))) {
+        for my $e (sort readdir($dh)) {
             next FILE if $e eq '.' || $e eq '..';
-            $log->tracef("Processing %s/%s", $prefix, $e);
+            my $path = "$prefix/$e";
+            $log->tracef("Processing %s ...", $path);
             my @lstat = lstat($e);
             if (!@lstat) {
-                my ($path, $err) = ("$prefix/$e", $!);
-                push @err_no_digest, [$path, $err];
-                $log->errorf("Can't lstat %s/%s: %s", $path, $err);
+                my $err = "Can't lstat: $!";
+                push @errs_unreadable, [$path, $err];
+                $log->errorf("[%s] %s", $path, $err);
                 next FILE;
             }
             if (-l _) {
-                # XXX digest readlink-nya
+                my $readlink = readlink($e);
+                if (!defined($readlink)) {
+                    my $err = "Can't read symlink: $!";
+                    push @errs_unreadable, $err;
+                    next FILE;
+                }
+                $cfargs{on_file}->(
+                    is_symlink => 1,
+                    name => $e,
+                    prefix => $prefix,
+                    target => $readlink,
+                );
+            } elsif (-d _) {
+                if (!chdir($e)) {
+                    my $err = "Can't chdir: $!";
+                    $log->errorf("[%s] %s", $path, $err);
+                    # XXX report errors for all files under it
+                    next FILE;
+                }
+                $code_find->(%cfargs, prefix=>$path); # XXX pid
+                chdir "..";
             } elsif (!(-f _)) {
                 # skip special files
                 next FILE;
             } else {
-                # XXX digest content-nya
-                my @stat = stat($e);
-
+                # XXX verify link against digest
             }
         }
     };
 
-    $code_find->(".", 0);
-
     if ($action eq 'update_db') {
-        # XXX
+        $code_find->(
+            prefix => ".",
+            # XXX pid
+        );
     } elsif ($action eq 'verify') {
-        # XXX
+        $code_find->(
+            prefix => ".",
+            on_file => sub {
+                my %hargs = @_;
+                if ($hargs{is_symlink}) {
+                    say "$hargs{name}: ", sha512_base64($hargs{target});
+                } else {
+                }
+            },
+        );
     }
 
     [200];
