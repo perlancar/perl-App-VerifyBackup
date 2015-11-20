@@ -110,6 +110,7 @@ sub verify_backup {
     local $CWD = $dir;
 
     my @errs_unreadable;
+    my @errs_mismatch;
 
     my $code_find;
     $code_find = sub {
@@ -137,7 +138,7 @@ sub verify_backup {
                 my $readlink = readlink($e);
                 if (!defined($readlink)) {
                     my $err = "Can't read symlink: $!";
-                    push @errs_unreadable, $err;
+                    push @errs_unreadable, [$path, $err];
                     next FILE;
                 }
                 $cfargs{on_file}->(
@@ -145,11 +146,13 @@ sub verify_backup {
                     name => $e,
                     prefix => $prefix,
                     target => $readlink,
+                    stat => \@lstat,
                 );
             } elsif (-d _) {
                 if (!chdir($e)) {
                     my $err = "Can't chdir: $!";
                     $log->errorf("[%s] %s", $path, $err);
+                    push @errs_unreadable, [$path, $err];
                     # XXX report errors for all files under it
                     next FILE;
                 }
@@ -159,7 +162,19 @@ sub verify_backup {
                 # skip special files
                 next FILE;
             } else {
-                # XXX verify link against digest
+                my $fh;
+                unless (open $fh, "<", $e) {
+                    my $err = "Can't open for reading: $!";
+                    $log->errorf("[%s] %s", $path, $err);
+                    push @errs_unreadable, [$path, $err];
+                    next FILE;
+                }
+                $cfargs{on_file}->(
+                    name => $e,
+                    prefix => $prefix,
+                    stat => \@lstat,
+                    fh => $fh,
+                );
             }
         }
     };
@@ -177,6 +192,22 @@ sub verify_backup {
                 if ($hargs{is_symlink}) {
                     say "$hargs{name}: ", sha512_base64($hargs{target});
                 } else {
+                    my $sha = Digest::SHA->new("sha512");
+                    my $bytes_read = 0;
+                    my $size = $hargs{stat}[7];
+                    my $fh = $hargs{fh};
+                    while (1) {
+                        my $block;
+                        my $bytes_block = sysread $fh, $block, 8192;
+                        last if $bytes_block <= 0;
+                        $sha->add($block);
+                        $bytes_read += $bytes_block;
+                    }
+                    if ($bytes_read != $size) {
+                        push @errs_mismatch, ["Size mismatch: $bytes_read vs $size"];
+                    } else {
+                        say "$hargs{name}: ".$sha->b64digest;
+                    }
                 }
             },
         );
