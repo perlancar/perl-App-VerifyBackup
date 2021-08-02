@@ -2,3 +2,4 @@ App-VerifyBackup-*
 .build
 *~
 nytprof*
+.DS_Store
